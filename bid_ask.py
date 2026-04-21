@@ -55,7 +55,7 @@ async def benchmark_binance(session: aiohttp.ClientSession) -> str:
     print(f"Benchmarking {len(BINANCE_HOSTS)} Binance endpoints...")
     url_path = BINANCE_PATH + "?symbol=BTCFDUSD"
 
-    async def probe(host: str) -> tuple[float, str]:
+    async def probe(host: str):
         try:
             t0 = time.perf_counter()
             async with session.get(
