@@ -204,9 +204,20 @@ def print_table():
         print(f"      = ({btcfdusd_ask:.6f} × {fdusdusdt_bid:.6f}) / {btcusdt_bid:.6f}")
         print(f"      = {(GREEN if alpha > 1 else RED)}{BOLD}{alpha:.8f}{RESET}")
         print(f"   Ab = (Alpha - 1) × 100%  =  {(GREEN if ab > 0 else RED)}{BOLD}{ab:+.6f}%{RESET}")
+
+        # Beta / Bb
+        fdusdusdt_ask = state["FDUSDUSDT"]["ask"]
+        btcfdusd_bid  = state["BTCFDUSD"]["bid"]
+        btcusdt_ask   = state["BTCUSDT"]["ask"]
+        beta = (fdusdusdt_ask * btcfdusd_bid) / btcusdt_ask
+        bb   = (beta - 1) * 100
+        print(f"\n{BOLD}Beta  = (FDUSDUSDT ask × BTCFDUSD bid) / BTCUSDT ask{RESET}")
+        print(f"      = ({fdusdusdt_ask:.6f} × {btcfdusd_bid:.6f}) / {btcusdt_ask:.6f}")
+        print(f"      = {(GREEN if beta > 1 else RED)}{BOLD}{beta:.8f}{RESET}")
+        print(f"   Bb = (Beta  - 1) × 100%  =  {(GREEN if bb > 0 else RED)}{BOLD}{bb:+.6f}%{RESET}")
     else:
         missing = needed - state.keys()
-        print(f"\n{YELLOW}Alpha: waiting for {missing}...{RESET}")
+        print(f"\n{YELLOW}Alpha/Beta: waiting for {missing}...{RESET}")
 
     print(f"\n{YELLOW}Press Ctrl+C to stop.{RESET}")
 
