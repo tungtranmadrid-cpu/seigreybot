@@ -1,7 +1,8 @@
 """
-Realtime Bid/Ask monitor — all async HTTP poll (aiohttp):
-  Binance  → async HTTP  (ping = HTTP round-trip)
-  MEXC     → async HTTP  (ping = HTTP round-trip)
+Realtime Bid/Ask monitor — optimized async HTTP:
+  - Auto-benchmark Binance endpoints at startup, pick the fastest
+  - Batch both Binance symbols in one request (saves 1 round-trip)
+  - Tuned TCP connector: keepalive, DNS cache, nodelay
 """
 
 import asyncio
@@ -19,34 +20,101 @@ CYAN   = "\033[96m"
 RESET  = "\033[0m"
 BOLD   = "\033[1m"
 
-DISPLAY_INTERVAL = 0.5  # screen refresh (seconds)
-POLL_INTERVAL    = 1.0  # REST poll interval (seconds)
+DISPLAY_INTERVAL = 0.5
+POLL_INTERVAL    = 1.0
 
-state = {}  # symbol -> latest price dict
-ORDER = ["BTCUSDT", "BTCFDUSD", "FDUSDUSDT"]
-
-FEEDS = [
-    {"exchange": "MEXC",    "symbol": "BTCUSDT",   "url": "https://api.mexc.com/api/v3/ticker/bookTicker"},
-    {"exchange": "Binance", "symbol": "BTCFDUSD",  "url": "https://api.binance.com/api/v3/ticker/bookTicker"},
-    {"exchange": "Binance", "symbol": "FDUSDUSDT", "url": "https://api.binance.com/api/v3/ticker/bookTicker"},
+BINANCE_HOSTS = [
+    "https://api.binance.com",
+    "https://api1.binance.com",
+    "https://api2.binance.com",
+    "https://api3.binance.com",
+    "https://api4.binance.com",
 ]
+BINANCE_PATH = "/api/v3/ticker/bookTicker"
+
+state        = {}
+ORDER        = ["BTCUSDT", "BTCFDUSD", "FDUSDUSDT"]
+best_host    = BINANCE_HOSTS[0]   # updated after benchmark
 
 
-# ── async HTTP pollers ───────────────────────────────────────────────────────
+# ── TCP connector (tuned) ────────────────────────────────────────────────────
 
-async def poll_feed(session: aiohttp.ClientSession, feed: dict):
+def make_connector() -> aiohttp.TCPConnector:
+    return aiohttp.TCPConnector(
+        ttl_dns_cache=300,       # cache DNS 5 min
+        use_dns_cache=True,
+        keepalive_timeout=30,    # keep TCP socket warm
+        enable_cleanup_closed=True,
+        force_close=False,
+    )
+
+
+# ── Binance host benchmark ───────────────────────────────────────────────────
+
+async def benchmark_binance(session: aiohttp.ClientSession) -> str:
+    print(f"Benchmarking {len(BINANCE_HOSTS)} Binance endpoints...")
+    url_path = BINANCE_PATH + "?symbol=BTCFDUSD"
+
+    async def probe(host: str) -> tuple[float, str]:
+        try:
+            t0 = time.perf_counter()
+            async with session.get(
+                host + url_path, timeout=aiohttp.ClientTimeout(total=3)
+            ) as r:
+                await r.read()
+            return (time.perf_counter() - t0) * 1000, host
+        except Exception:
+            return float("inf"), host
+
+    results = await asyncio.gather(*(probe(h) for h in BINANCE_HOSTS))
+    results.sort()
+    for ms, host in results:
+        tag = " ← best" if host == results[0][1] else ""
+        label = "timeout" if ms == float("inf") else f"{ms:.1f}ms"
+        print(f"  {host:<35}  {label}{tag}")
+    return results[0][1]
+
+
+# ── pollers ──────────────────────────────────────────────────────────────────
+
+async def poll_binance(session: aiohttp.ClientSession):
+    """Fetches BTCFDUSD + FDUSDUSDT in one batch request."""
+    # Pass symbols directly in URL — aiohttp would URL-encode brackets otherwise
+    url     = best_host + BINANCE_PATH + '?symbols=["BTCFDUSD","FDUSDUSDT"]'
+    timeout = aiohttp.ClientTimeout(total=5)
     while True:
         t0 = time.perf_counter()
         try:
-            async with session.get(
-                feed["url"],
-                params={"symbol": feed["symbol"]},
-                timeout=aiohttp.ClientTimeout(total=5),
-            ) as resp:
+            async with session.get(url, timeout=timeout) as resp:
+                ping_ms = (time.perf_counter() - t0) * 1000
+                rows = await resp.json()
+            if isinstance(rows, list):
+                for d in rows:
+                    state[d["symbol"]] = {
+                        "exchange": "Binance",
+                        "symbol":   d["symbol"],
+                        "bid":      float(d["bidPrice"]),
+                        "bid_qty":  float(d["bidQty"]),
+                        "ask":      float(d["askPrice"]),
+                        "ask_qty":  float(d["askQty"]),
+                        "ping_ms":  ping_ms,
+                    }
+        except Exception:
+            pass
+        await asyncio.sleep(POLL_INTERVAL)
+
+
+async def poll_mexc(session: aiohttp.ClientSession):
+    url     = "https://api.mexc.com/api/v3/ticker/bookTicker"
+    timeout = aiohttp.ClientTimeout(total=5)
+    while True:
+        t0 = time.perf_counter()
+        try:
+            async with session.get(url, params={"symbol": "BTCUSDT"}, timeout=timeout) as resp:
                 ping_ms = (time.perf_counter() - t0) * 1000
                 data = await resp.json()
-            state[feed["symbol"]] = {
-                "exchange": feed["exchange"],
+            state["BTCUSDT"] = {
+                "exchange": "MEXC",
                 "symbol":   data["symbol"],
                 "bid":      float(data["bidPrice"]),
                 "bid_qty":  float(data["bidQty"]),
@@ -60,9 +128,12 @@ async def poll_feed(session: aiohttp.ClientSession, feed: dict):
 
 
 async def start_pollers():
-    async with aiohttp.ClientSession() as session:
-        await asyncio.gather(*(poll_feed(session, f) for f in FEEDS))
-
+    global best_host
+    async with aiohttp.ClientSession(connector=make_connector()) as session:
+        best_host = await benchmark_binance(session)
+        print(f"\nUsing {best_host}\n")
+        await asyncio.sleep(0.5)
+        await asyncio.gather(poll_binance(session), poll_mexc(session))
 
 
 # ── display ──────────────────────────────────────────────────────────────────
@@ -82,7 +153,7 @@ def clear():
 def print_table():
     col = {
         "exchange": 10, "symbol": 12, "bid": 16, "bid_qty": 16,
-        "ask": 16, "ask_qty": 16, "ping": 12,
+        "ask": 16, "ask_qty": 16, "ping": 10,
     }
     sep_len = sum(col.values()) + len(col) - 1
 
@@ -98,7 +169,7 @@ def print_table():
     print(
         f"{BOLD}Realtime Bid/Ask  —  "
         f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}  "
-        f"({ready}/{len(ORDER)} feeds){RESET}\n"
+        f"({ready}/{len(ORDER)} feeds  |  {best_host}){RESET}\n"
     )
     print(header)
     print("-" * sep_len)
@@ -111,16 +182,14 @@ def print_table():
                 f"{YELLOW}{'connecting...':>{col['bid']}}{RESET}"
             )
             continue
-        pc        = ping_color(r["ping_ms"])
-        transport = f"[{r.get('transport','?')}]"
-        ping_str  = f"{r['ping_ms']:.1f} {transport}"
+        pc = ping_color(r["ping_ms"])
         print(
             f"{r['exchange']:<{col['exchange']}} {r['symbol']:<{col['symbol']}} "
             f"{GREEN}{r['bid']:>{col['bid']}.6f}{RESET} "
             f"{r['bid_qty']:>{col['bid_qty']}.6f} "
             f"{RED}{r['ask']:>{col['ask']}.6f}{RESET} "
             f"{r['ask_qty']:>{col['ask_qty']}.6f} "
-            f"{pc}{ping_str:>{col['ping']}}{RESET}"
+            f"{pc}{r['ping_ms']:>{col['ping']}.1f}{RESET}"
         )
 
     # Alpha / Ab
@@ -152,7 +221,6 @@ async def display_loop():
 # ── entry point ───────────────────────────────────────────────────────────────
 
 async def main():
-    print("Connecting... Press Ctrl+C to stop.")
     await asyncio.gather(start_pollers(), display_loop())
 
 
