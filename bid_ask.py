@@ -154,6 +154,39 @@ def clear():
     os.system("cls" if os.name == "nt" else "clear")
 
 
+def print_matrix(ab: float, bb: float):
+    """Render a 2x2 decision matrix, highlighting the active quadrant."""
+    W = 26
+    CELLS = {
+        # (ab_pos, bb_pos): (title, action line)
+        (True,  True):  ("Binance PREMIUM",   "SELL Binance / BUY MEXC"),
+        (True,  False): ("WIDE SPREAD",       "WAIT"),
+        (False, True):  ("TWO-SIDED (rare)",  "CHECK DATA"),
+        (False, False): ("Binance DISCOUNT",  "BUY Binance / SELL MEXC"),
+    }
+    current = (ab > 0, bb > 0)
+
+    def cell(key, i):
+        txt = CELLS[key][i]
+        padded = f" {txt:<{W - 1}}"
+        if key == current:
+            padded = f"{BOLD}{CYAN}{padded}{RESET}"
+        return padded
+
+    h = "─" * W
+    print(f"\n{BOLD}── Matrix ─────────────────────────────────────────────────────{RESET}")
+    print(f"            {'Bb > 0':^{W}} {'Bb < 0':^{W}}")
+    print(f"           ┌{h}┬{h}┐")
+    for i in range(2):
+        p = "  Ab > 0   " if i == 0 else "           "
+        print(f"{p}│{cell((True, True), i)}│{cell((True, False), i)}│")
+    print(f"           ├{h}┼{h}┤")
+    for i in range(2):
+        p = "  Ab < 0   " if i == 0 else "           "
+        print(f"{p}│{cell((False, True), i)}│{cell((False, False), i)}│")
+    print(f"           └{h}┴{h}┘")
+
+
 def print_table():
     col = {
         "exchange": 10, "symbol": 12, "bid": 16, "bid_qty": 16,
@@ -254,6 +287,8 @@ def print_table():
         print(f"  Edge:     {edge_pct:.6f}%  gross   |   "
               f"{vcolor}{net_pct:+.6f}%{RESET} net  (fees est. {FEES_PCT}%)")
         print(f"  Verdict:  {vcolor}{BOLD}{verdict}{RESET}")
+
+        print_matrix(ab, bb)
     else:
         missing = needed - state.keys()
         print(f"\n{YELLOW}Alpha/Beta: waiting for {missing}...{RESET}")
@@ -276,7 +311,12 @@ async def main():
 
 if __name__ == "__main__":
     import sys
+    # Windows console may default to cp1252; force UTF-8 so box-drawing glyphs render
     if sys.platform == "win32":
+        try:
+            sys.stdout.reconfigure(encoding="utf-8")
+        except Exception:
+            pass
         asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
     try:
         asyncio.run(main())
