@@ -1,17 +1,15 @@
 """
-Realtime Bid/Ask monitor — hybrid transport:
-  Binance  → WebSocket stream  (ping = WS ping/pong frame)
-  MEXC     → async HTTP poll   (ping = HTTP round-trip, WS blocked by exchange)
+Realtime Bid/Ask monitor — all async HTTP poll (aiohttp):
+  Binance  → async HTTP  (ping = HTTP round-trip)
+  MEXC     → async HTTP  (ping = HTTP round-trip)
 """
 
 import asyncio
-import json
 import os
 import time
 from datetime import datetime
 
 import aiohttp
-import websockets
 
 # ANSI colors
 GREEN  = "\033[92m"
@@ -21,80 +19,50 @@ CYAN   = "\033[96m"
 RESET  = "\033[0m"
 BOLD   = "\033[1m"
 
-DISPLAY_INTERVAL  = 0.5   # screen refresh (seconds)
-PING_INTERVAL     = 5.0   # re-measure Binance WS ping every N seconds
-MEXC_POLL_INTERVAL = 1.0  # MEXC REST poll interval (seconds)
+DISPLAY_INTERVAL = 0.5  # screen refresh (seconds)
+POLL_INTERVAL    = 1.0  # REST poll interval (seconds)
 
 state = {}  # symbol -> latest price dict
 ORDER = ["BTCUSDT", "BTCFDUSD", "FDUSDUSDT"]
 
-
-# ── Binance WebSocket ────────────────────────────────────────────────────────
-
-async def binance_ws_ping(ws) -> float:
-    t0 = time.perf_counter()
-    pong = await ws.ping()
-    await asyncio.wait_for(pong, timeout=5.0)
-    return (time.perf_counter() - t0) * 1000
+FEEDS = [
+    {"exchange": "MEXC",    "symbol": "BTCUSDT",   "url": "https://api.mexc.com/api/v3/ticker/bookTicker"},
+    {"exchange": "Binance", "symbol": "BTCFDUSD",  "url": "https://api.binance.com/api/v3/ticker/bookTicker"},
+    {"exchange": "Binance", "symbol": "FDUSDUSDT", "url": "https://api.binance.com/api/v3/ticker/bookTicker"},
+]
 
 
-async def binance_ws():
-    url = "wss://stream.binance.com:9443/stream?streams=btcfdusd@bookTicker/fdusdusdt@bookTicker"
-    async for ws in websockets.connect(url, ping_interval=None):
+# ── async HTTP pollers ───────────────────────────────────────────────────────
+
+async def poll_feed(session: aiohttp.ClientSession, feed: dict):
+    while True:
+        t0 = time.perf_counter()
         try:
-            ping_ms   = await binance_ws_ping(ws)
-            last_ping = time.perf_counter()
-            async for raw in ws:
-                now = time.perf_counter()
-                if now - last_ping >= PING_INTERVAL:
-                    try:
-                        ping_ms = await binance_ws_ping(ws)
-                    except Exception:
-                        pass
-                    last_ping = now
-
-                msg = json.loads(raw)
-                if "data" not in msg:
-                    continue
-                d = msg["data"]
-                state[d["s"]] = {
-                    "exchange": "Binance",
-                    "symbol":   d["s"],
-                    "bid":      float(d["b"]),
-                    "bid_qty":  float(d["B"]),
-                    "ask":      float(d["a"]),
-                    "ask_qty":  float(d["A"]),
-                    "ping_ms":  ping_ms,
-                    "transport": "WS",
-                }
+            async with session.get(
+                feed["url"],
+                params={"symbol": feed["symbol"]},
+                timeout=aiohttp.ClientTimeout(total=5),
+            ) as resp:
+                ping_ms = (time.perf_counter() - t0) * 1000
+                data = await resp.json()
+            state[feed["symbol"]] = {
+                "exchange": feed["exchange"],
+                "symbol":   data["symbol"],
+                "bid":      float(data["bidPrice"]),
+                "bid_qty":  float(data["bidQty"]),
+                "ask":      float(data["askPrice"]),
+                "ask_qty":  float(data["askQty"]),
+                "ping_ms":  ping_ms,
+            }
         except Exception:
-            await asyncio.sleep(1)
+            pass
+        await asyncio.sleep(POLL_INTERVAL)
 
 
-# ── MEXC async HTTP poll ─────────────────────────────────────────────────────
-
-async def mexc_poll():
-    url = "https://api.mexc.com/api/v3/ticker/bookTicker"
+async def start_pollers():
     async with aiohttp.ClientSession() as session:
-        while True:
-            t0 = time.perf_counter()
-            try:
-                async with session.get(url, params={"symbol": "BTCUSDT"}, timeout=aiohttp.ClientTimeout(total=5)) as resp:
-                    ping_ms = (time.perf_counter() - t0) * 1000
-                    data = await resp.json()
-                state["BTCUSDT"] = {
-                    "exchange":  "MEXC",
-                    "symbol":    data["symbol"],
-                    "bid":       float(data["bidPrice"]),
-                    "bid_qty":   float(data["bidQty"]),
-                    "ask":       float(data["askPrice"]),
-                    "ask_qty":   float(data["askQty"]),
-                    "ping_ms":   ping_ms,
-                    "transport": "HTTP",
-                }
-            except Exception:
-                pass
-            await asyncio.sleep(MEXC_POLL_INTERVAL)
+        await asyncio.gather(*(poll_feed(session, f) for f in FEEDS))
+
 
 
 # ── display ──────────────────────────────────────────────────────────────────
@@ -185,7 +153,7 @@ async def display_loop():
 
 async def main():
     print("Connecting... Press Ctrl+C to stop.")
-    await asyncio.gather(binance_ws(), mexc_poll(), display_loop())
+    await asyncio.gather(start_pollers(), display_loop())
 
 
 if __name__ == "__main__":
