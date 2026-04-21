@@ -23,6 +23,11 @@ BOLD   = "\033[1m"
 DISPLAY_INTERVAL = 0.5
 POLL_INTERVAL    = 1.0
 
+# Round-trip fees (% ). Tune per your VIP tier / exchange promos.
+#   Binance BTCFDUSD & FDUSDUSDT historically: 0% (promo)
+#   MEXC BTCUSDT: ~0.05-0.10% taker
+FEES_PCT = 0.10  # conservative total for the round-trip
+
 BINANCE_HOSTS = [
     "https://api.binance.com",
     "https://api1.binance.com",
@@ -215,6 +220,41 @@ def print_table():
         print(f"      = ({fdusdusdt_ask:.6f} × {btcfdusd_bid:.6f}) / {btcusdt_ask:.6f}")
         print(f"      = {(GREEN if beta > 1 else RED)}{BOLD}{beta:.8f}{RESET}")
         print(f"   Bb = (Beta  - 1) × 100%  =  {(GREEN if bb > 0 else RED)}{BOLD}{bb:+.6f}%{RESET}")
+
+        # ── Trading signal matrix (Ab × Bb sign) ─────────────────────────
+        if ab > 0 and bb > 0:
+            scenario = "Binance PREMIUM  (++)"
+            action   = "SELL BTC on Binance (via FDUSD)  →  BUY on MEXC"
+            edge_pct = min(ab, bb)              # conservative: smaller leg
+        elif ab < 0 and bb < 0:
+            scenario = "Binance DISCOUNT (--)"
+            action   = "BUY BTC on Binance (via FDUSD)   →  SELL on MEXC"
+            edge_pct = min(abs(ab), abs(bb))
+        elif ab > 0 and bb < 0:
+            scenario = "WIDE SPREAD      (+-)"
+            action   = "WAIT — no-arb zone, spread too wide to cross"
+            edge_pct = 0.0
+        else:  # ab < 0, bb > 0
+            scenario = "TWO-SIDED        (-+)"
+            action   = "CHECK DATA — rare cross-spread window"
+            edge_pct = min(abs(ab), bb)
+
+        net_pct = edge_pct - FEES_PCT
+        if net_pct > FEES_PCT:
+            verdict, vcolor = "STRONG",       GREEN
+        elif net_pct > 0:
+            verdict, vcolor = "marginal",     YELLOW
+        else:
+            verdict, vcolor = "below noise",  RED
+
+        scen_color = GREEN if edge_pct > 0 else YELLOW
+
+        print(f"\n{BOLD}── Trading Signal ─────────────────────────────────────────────{RESET}")
+        print(f"  State:    {scen_color}{BOLD}{scenario}{RESET}")
+        print(f"  Action:   {BOLD}{action}{RESET}")
+        print(f"  Edge:     {edge_pct:.6f}%  gross   |   "
+              f"{vcolor}{net_pct:+.6f}%{RESET} net  (fees est. {FEES_PCT}%)")
+        print(f"  Verdict:  {vcolor}{BOLD}{verdict}{RESET}")
     else:
         missing = needed - state.keys()
         print(f"\n{YELLOW}Alpha/Beta: waiting for {missing}...{RESET}")
