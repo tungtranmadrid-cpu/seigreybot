@@ -23,10 +23,9 @@ BOLD   = "\033[1m"
 DISPLAY_INTERVAL = 0.5
 POLL_INTERVAL    = 1.0
 
-# Round-trip fees (% ). Tune per your VIP tier / exchange promos.
-#   Binance BTCFDUSD & FDUSDUSDT historically: 0% (promo)
-#   MEXC BTCUSDT: ~0.05-0.10% taker
-FEES_PCT = 0.10  # conservative total for the round-trip
+# Round-trip fees (%). 0% for maker on Binance BTCFDUSD/FDUSDUSDT (promo)
+# and on MEXC BTCUSDT with maker. Bump up if you expect taker fills.
+FEES_PCT = 0.0
 
 BINANCE_HOSTS = [
     "https://api.binance.com",
